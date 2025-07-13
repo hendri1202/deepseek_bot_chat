@@ -6,24 +6,22 @@ from flask import Flask, request
 from telegram import Update, Bot
 
 # --- KONFIGURASI AWAL ---
-# Mengatur logging untuk memantau aktivitas bot di Render
+# Mengatur logging untuk memantau aktivitas bot di dasbor Render
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# ### DIHAPUS ###
-# load_dotenv() tidak diperlukan di Render. Gunakan Environment Variables di dasbor.
-
 # --- MENGAMBIL KUNCI API DARI ENVIRONMENT VARIABLES RENDER ---
+# load_dotenv() tidak lagi diperlukan karena Render menggunakan sistemnya sendiri.
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 
-# ### DITAMBAHKAN ### Pengecekan penting saat start-up
+# Pengecekan penting saat aplikasi dimulai.
+# Jika salah satu token tidak ada, aplikasi akan crash dengan pesan error yang jelas di Logs Render.
 if not TELEGRAM_BOT_TOKEN:
     logger.critical("Variabel TELEGRAM_BOT_TOKEN tidak ditemukan! Bot tidak bisa dimulai.")
-    # Ini akan membuat aplikasi crash dan memberi tahu Anda di log Render
     raise ValueError("Missing TELEGRAM_BOT_TOKEN environment variable")
 
 if not DEEPSEEK_API_KEY:
@@ -45,8 +43,9 @@ except Exception as e:
 app = Flask(__name__)
 bot = Bot(token=TELEGRAM_BOT_TOKEN)
 
-# PERINGATAN: "Memori" ini bersifat sementara dan akan hilang jika server restart.
-# Untuk memori permanen, Anda perlu menggunakan database seperti PostgreSQL dari Render.
+# PERINGATAN: "Memori" ini bersifat sementara dan akan HILANG setiap kali server
+# di Render restart atau tertidur (jika menggunakan paket gratis).
+# Untuk memori permanen, Anda perlu menggunakan database (misalnya PostgreSQL).
 conversation_history = {}
 
 async def process_message(update: Update):
@@ -86,9 +85,10 @@ async def process_message(update: Update):
         logger.error(f"Error saat memproses pesan: {e}")
         await update.message.reply_text(f"Maaf, terjadi kesalahan. Silakan coba lagi nanti.")
 
-# ### DIUBAH ###
-# Endpoint untuk MENERIMA pesan dari Telegram.
-# Path-nya menggunakan token agar tidak mudah ditebak orang lain. Ini lebih aman.
+# === BAGIAN PENTING UNTUK WEBHOOK ===
+
+# 1. Endpoint untuk MENERIMA pesan dari Telegram.
+# Path-nya menggunakan token agar tidak mudah ditebak orang lain (lebih aman).
 @app.route(f'/{TELEGRAM_BOT_TOKEN}', methods=['POST'])
 def webhook_handler():
     update = Update.de_json(request.get_json(force=True), bot)
@@ -96,11 +96,11 @@ def webhook_handler():
     asyncio.run(process_message(update))
     return 'ok'
 
-# ### DITAMBAHKAN ### Endpoint untuk MENYETEL webhook.
+# 2. Endpoint untuk MENYETEL/MENDAFTARKAN webhook.
 # Anda hanya perlu mengunjungi URL ini sekali saja untuk melakukan setup.
 @app.route('/setwebhook')
 def set_webhook():
-    # URL publik Anda yang sudah benar
+    # URL publik Anda dari dasbor Render.
     render_url = f"https://deepseek-bot-chat.onrender.com/{TELEGRAM_BOT_TOKEN}"
     
     # Memberitahu Telegram untuk mengirim update ke URL ini
@@ -113,11 +113,7 @@ def set_webhook():
         logger.error("Gagal menyetel webhook.")
         return "Webhook setup failed."
 
-# Endpoint dasar untuk mengecek apakah server hidup
+# 3. Endpoint dasar untuk mengecek apakah server hidup.
 @app.route('/')
 def index():
-    return 'Bot server with memory is running!'
-
-# Bagian ini tidak digunakan oleh Gunicorn di Render, tapi bagus untuk testing lokal
-# if __name__ == '__main__':
-#    app.run(debug=True)
+    return 'Bot server is running!'
