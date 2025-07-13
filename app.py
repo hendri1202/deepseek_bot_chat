@@ -14,12 +14,10 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # --- MENGAMBIL KUNCI API DARI ENVIRONMENT VARIABLES RENDER ---
-# load_dotenv() tidak lagi diperlukan karena Render menggunakan sistemnya sendiri.
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 
 # Pengecekan penting saat aplikasi dimulai.
-# Jika salah satu token tidak ada, aplikasi akan crash dengan pesan error yang jelas di Logs Render.
 if not TELEGRAM_BOT_TOKEN:
     logger.critical("Variabel TELEGRAM_BOT_TOKEN tidak ditemukan! Bot tidak bisa dimulai.")
     raise ValueError("Missing TELEGRAM_BOT_TOKEN environment variable")
@@ -45,7 +43,6 @@ bot = Bot(token=TELEGRAM_BOT_TOKEN)
 
 # PERINGATAN: "Memori" ini bersifat sementara dan akan HILANG setiap kali server
 # di Render restart atau tertidur (jika menggunakan paket gratis).
-# Untuk memori permanen, Anda perlu menggunakan database (misalnya PostgreSQL).
 conversation_history = {}
 
 async def process_message(update: Update):
@@ -88,22 +85,18 @@ async def process_message(update: Update):
 # === BAGIAN PENTING UNTUK WEBHOOK ===
 
 # 1. Endpoint untuk MENERIMA pesan dari Telegram.
-# Path-nya menggunakan token agar tidak mudah ditebak orang lain (lebih aman).
+# Aturannya: Hanya bisa diakses dengan metode POST.
 @app.route(f'/{TELEGRAM_BOT_TOKEN}', methods=['POST'])
 def webhook_handler():
     update = Update.de_json(request.get_json(force=True), bot)
-    # Menjalankan fungsi async di dalam thread Flask
     asyncio.run(process_message(update))
     return 'ok'
 
 # 2. Endpoint untuk MENYETEL/MENDAFTARKAN webhook.
-# Anda hanya perlu mengunjungi URL ini sekali saja untuk melakukan setup.
-@app.route('/setwebhook')
+# ### PERBAIKAN ### Aturannya: Hanya bisa diakses dengan metode GET (dari browser).
+@app.route('/setwebhook', methods=['GET'])
 def set_webhook():
-    # URL publik Anda dari dasbor Render.
     render_url = f"https://deepseek-bot-chat.onrender.com/{TELEGRAM_BOT_TOKEN}"
-    
-    # Memberitahu Telegram untuk mengirim update ke URL ini
     status = bot.set_webhook(render_url)
     
     if status:
@@ -114,6 +107,7 @@ def set_webhook():
         return "Webhook setup failed."
 
 # 3. Endpoint dasar untuk mengecek apakah server hidup.
+# Aturannya: Bisa diakses dengan metode GET.
 @app.route('/')
 def index():
     return 'Bot server is running!'
