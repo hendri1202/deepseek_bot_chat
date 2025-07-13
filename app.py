@@ -1,23 +1,36 @@
 import os
 import logging
 import asyncio
-from dotenv import load_dotenv
 from openai import OpenAI
-
 from flask import Flask, request
 from telegram import Update, Bot
 
 # --- KONFIGURASI AWAL ---
-load_dotenv()
+# Mengatur logging untuk memantau aktivitas bot di Render
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
+# ### DIHAPUS ###
+# load_dotenv() tidak diperlukan di Render. Gunakan Environment Variables di dasbor.
+
+# --- MENGAMBIL KUNCI API DARI ENVIRONMENT VARIABLES RENDER ---
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 
+# ### DITAMBAHKAN ### Pengecekan penting saat start-up
+if not TELEGRAM_BOT_TOKEN:
+    logger.critical("Variabel TELEGRAM_BOT_TOKEN tidak ditemukan! Bot tidak bisa dimulai.")
+    # Ini akan membuat aplikasi crash dan memberi tahu Anda di log Render
+    raise ValueError("Missing TELEGRAM_BOT_TOKEN environment variable")
+
+if not DEEPSEEK_API_KEY:
+    logger.critical("Variabel DEEPSEEK_API_KEY tidak ditemukan! Bot tidak bisa dimulai.")
+    raise ValueError("Missing DEEPSEEK_API_KEY environment variable")
+
+# Inisialisasi Klien API
 try:
     deepseek_client = OpenAI(
         api_key=DEEPSEEK_API_KEY,
@@ -32,11 +45,10 @@ except Exception as e:
 app = Flask(__name__)
 bot = Bot(token=TELEGRAM_BOT_TOKEN)
 
-# BARIS BARU: Variabel global untuk menyimpan riwayat percakapan
-# Format: {chat_id: [{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}]}
+# PERINGATAN: "Memori" ini bersifat sementara dan akan hilang jika server restart.
+# Untuk memori permanen, Anda perlu menggunakan database seperti PostgreSQL dari Render.
 conversation_history = {}
 
-# BAGIAN DIUBAH: Logika pemroses pesan kini memiliki ingatan
 async def process_message(update: Update):
     if not update.message or not update.message.text:
         return
@@ -44,52 +56,68 @@ async def process_message(update: Update):
     chat_id = update.message.chat_id
     user_message = update.message.text
     
-    # BARIS BARU: Ambil atau buat riwayat baru untuk pengguna ini
     if chat_id not in conversation_history:
         conversation_history[chat_id] = []
     
     user_history = conversation_history[chat_id]
-    
-    # BARIS BARU: Tambahkan pesan baru dari pengguna ke riwayatnya
     user_history.append({"role": "user", "content": user_message})
     
-    # BARIS BARU: Batasi panjang riwayat agar tidak terlalu besar (misal: 10 pesan terakhir)
-    # Ini penting untuk menghemat token API
     if len(user_history) > 10:
         user_history = user_history[-10:]
 
     try:
-        # BARIS BARU: Gabungkan prompt sistem dengan riwayat percakapan
         messages_to_send = [
             {"role": "system", "content": "You are a helpful assistant. You can remember the last few messages in our conversation."}
         ] + user_history
 
         chat_completion = deepseek_client.chat.completions.create(
             model="deepseek-chat",
-            messages=messages_to_send, # Menggunakan pesan yang sudah ada riwayatnya
+            messages=messages_to_send,
             max_tokens=1500,
         )
         response_text = chat_completion.choices[0].message.content
         
-        # BARIS BARU: Simpan balasan dari bot ke dalam riwayat
         user_history.append({"role": "assistant", "content": response_text})
-        conversation_history[chat_id] = user_history # Simpan kembali riwayat yang sudah terupdate
+        conversation_history[chat_id] = user_history
         
         await update.message.reply_text(response_text)
         
     except Exception as e:
         logger.error(f"Error saat memproses pesan: {e}")
-        await update.message.reply_text(f"Maaf, terjadi kesalahan: {str(e)}")
+        await update.message.reply_text(f"Maaf, terjadi kesalahan. Silakan coba lagi nanti.")
 
-
-@app.route('/webhook', methods=['POST'])
-def webhook():
-    update_data = request.get_json()
-    logger.info(f"Menerima update dari chat_id: {update_data.get('message', {}).get('chat', {}).get('id')}")
-    update = Update.de_json(update_data, bot)
+# ### DIUBAH ###
+# Endpoint untuk MENERIMA pesan dari Telegram.
+# Path-nya menggunakan token agar tidak mudah ditebak orang lain. Ini lebih aman.
+@app.route(f'/{TELEGRAM_BOT_TOKEN}', methods=['POST'])
+def webhook_handler():
+    update = Update.de_json(request.get_json(force=True), bot)
+    # Menjalankan fungsi async di dalam thread Flask
     asyncio.run(process_message(update))
-    return 'ok', 200
+    return 'ok'
 
+# ### DITAMBAHKAN ### Endpoint untuk MENYETEL webhook.
+# Anda hanya perlu mengunjungi URL ini sekali saja untuk melakukan setup.
+@app.route('/setwebhook')
+def set_webhook():
+    # URL publik Anda yang sudah benar
+    render_url = f"https://deepseek-bot-chat.onrender.com/{TELEGRAM_BOT_TOKEN}"
+    
+    # Memberitahu Telegram untuk mengirim update ke URL ini
+    status = bot.set_webhook(render_url)
+    
+    if status:
+        logger.info(f"Webhook berhasil di-set ke: {render_url}")
+        return f"Webhook setup ok! URL set to: {render_url}"
+    else:
+        logger.error("Gagal menyetel webhook.")
+        return "Webhook setup failed."
+
+# Endpoint dasar untuk mengecek apakah server hidup
 @app.route('/')
 def index():
     return 'Bot server with memory is running!'
+
+# Bagian ini tidak digunakan oleh Gunicorn di Render, tapi bagus untuk testing lokal
+# if __name__ == '__main__':
+#    app.run(debug=True)
